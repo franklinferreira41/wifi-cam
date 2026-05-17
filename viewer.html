@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WiFi-Cam · Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#070709;--surface:#0d0d12;--border:#1c1c28;
+    --accent:#00ff88;--red:#ff3344;--yellow:#ffbb00;
+    --text:#e0e0e8;--muted:#444455;--font:'JetBrains Mono',monospace;
+  }
+  html,body{height:100%;width:100%;background:var(--bg);color:var(--text);font-family:var(--font);overflow:hidden}
+
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
+  #video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none}
+  #video.active{display:block}
+  #canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none}
+  #canvas.active{display:block}
+
+  #scan{
+    position:fixed;inset:0;z-index:5;pointer-events:none;
+    background:repeating-linear-gradient(to bottom,transparent,transparent 3px,rgba(0,0,0,.05) 3px,rgba(0,0,0,.05) 6px);
+  }
+  #person-flash{position:fixed;inset:0;z-index:8;pointer-events:none;border:3px solid transparent;transition:border-color .2s}
+  #person-flash.alert{border-color:rgba(255,51,68,.6);box-shadow:inset 0 0 30px rgba(255,51,68,.12)}
+
+  /* ── HUD ── */
+  #hud{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;padding:14px 18px;pointer-events:none}
+  #hud-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}
+  #hud-bottom{margin-top:auto;display:flex;justify-content:space-between;align-items:flex-end}
+
+  .badge{
+    background:rgba(0,0,0,.78);border:1px solid var(--border);border-radius:4px;
+    padding:6px 11px;font-size:10px;letter-spacing:.07em;backdrop-filter:blur(10px);
+    display:flex;align-items:center;gap:7px;
+  }
+  #live-badge{border-color:rgba(255,51,68,.4);display:none}
+  #live-badge.show{display:flex}
+  .rec-dot{width:7px;height:7px;border-radius:50%;background:var(--red);animation:blink 1.2s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.1}}
+
+  #detect-badge{display:none}
+  #detect-badge.show{display:flex}
+  #detect-badge.clear{border-color:rgba(0,255,136,.2);color:var(--accent)}
+  #detect-badge.alert{border-color:var(--red);color:var(--red)}
+
+  #status-badge.offline{color:var(--muted)}
+  #status-badge.waiting{color:var(--yellow)}
+  #status-badge.connected{color:var(--accent)}
+  .s-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+
+  /* ── Track panel ── */
+  #track-panel{
+    position:fixed;top:54px;right:16px;z-index:25;
+    background:rgba(0,0,0,.9);border:1px solid var(--border);border-radius:6px;
+    padding:14px;font-size:10px;line-height:2;backdrop-filter:blur(10px);
+    min-width:170px;pointer-events:none;letter-spacing:.05em;display:none;
+  }
+  #track-panel.show{display:block}
+  #track-panel b{color:var(--accent)}
+
+  /* ── Bottom controls ── */
+  .meta-line{font-size:10px;color:var(--muted);background:rgba(0,0,0,.65);padding:3px 8px;border-radius:3px;margin-top:3px}
+  #controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;pointer-events:all}
+  .ctrl-btn{
+    height:38px;padding:0 11px;border-radius:6px;border:1px solid var(--border);
+    background:rgba(0,0,0,.78);color:var(--text);font-family:var(--font);
+    font-size:9px;letter-spacing:.1em;cursor:pointer;display:flex;
+    align-items:center;gap:5px;backdrop-filter:blur(8px);
+    transition:all .15s;-webkit-tap-highlight-color:transparent;
+  }
+  .ctrl-btn:hover{background:rgba(255,255,255,.06)}
+  .ctrl-btn:active{transform:scale(.94)}
+  .ctrl-btn.on{border-color:var(--accent);color:var(--accent)}
+
+  /* ── Model loading ── */
+  #model-overlay{
+    position:fixed;inset:0;z-index:60;background:rgba(7,7,9,.96);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  }
+  .model-icon{font-size:38px}
+  .model-title{font-size:13px;font-weight:700;letter-spacing:.15em;color:var(--accent)}
+  .model-sub{font-size:10px;color:var(--muted);letter-spacing:.12em;text-align:center}
+  .prog-bar{width:220px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+  .prog-fill{height:100%;background:var(--accent);border-radius:2px;animation:indeterminate 1.5s ease-in-out infinite}
+  @keyframes indeterminate{0%{width:0%;margin-left:0%}50%{width:60%;margin-left:20%}100%{width:0%;margin-left:100%}}
+
+  /* ── Waiting ── */
+  #wait{
+    position:fixed;inset:0;z-index:50;
+    display:none;flex-direction:column;align-items:center;justify-content:center;gap:22px;
+  }
+  #wait.show{display:flex}
+  .wait-icon{font-size:52px}
+  .wait-title{font-size:17px;font-weight:700;letter-spacing:.12em;color:var(--accent)}
+  .wait-msg{font-size:11px;color:var(--muted);letter-spacing:.1em;text-align:center;line-height:1.8}
+  .spinner{width:26px;height:26px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ── Setup ── */
+  #setup{
+    position:fixed;inset:0;z-index:100;background:var(--bg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:22px;padding:32px;
+  }
+  .setup-icon{font-size:50px}
+  .setup-title{font-size:20px;font-weight:700;letter-spacing:.12em;color:var(--accent)}
+  .setup-sub{font-size:10px;letter-spacing:.2em;color:var(--muted);text-transform:uppercase;margin-top:4px;text-align:center}
+  .field{width:100%;max-width:300px;display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:10px;letter-spacing:.15em;color:var(--muted);text-transform:uppercase}
+  .field input{
+    width:100%;background:var(--surface);border:1px solid var(--border);border-radius:6px;
+    padding:12px 16px;font-family:var(--font);font-size:16px;color:var(--text);
+    outline:none;transition:border-color .2s;text-align:center;letter-spacing:.2em;text-transform:uppercase;
+  }
+  .field input:focus{border-color:var(--accent)}
+  .hint{font-size:9px;color:#2a2a2a;letter-spacing:.1em;margin-top:2px}
+
+  .setup-actions{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
+  .primary-btn{
+    width:100%;padding:14px;background:var(--accent);color:#000;
+    border:none;border-radius:6px;font-family:var(--font);font-size:13px;font-weight:700;
+    letter-spacing:.18em;text-transform:uppercase;cursor:pointer;transition:opacity .2s,transform .1s;
+  }
+  .primary-btn:active{transform:scale(.97);opacity:.85}
+  .secondary-btn{
+    width:100%;padding:12px;background:transparent;color:var(--text);
+    border:1px solid var(--border);border-radius:6px;font-family:var(--font);font-size:12px;
+    letter-spacing:.15em;text-transform:uppercase;cursor:pointer;transition:all .15s;
+  }
+  .secondary-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .secondary-btn:active{transform:scale(.97)}
+
+  /* ── QR Scanner modal ── */
+  #qr-modal{
+    position:fixed;inset:0;z-index:150;background:rgba(7,7,9,.97);
+    display:none;flex-direction:column;align-items:center;justify-content:center;gap:18px;
+  }
+  #qr-modal.show{display:flex}
+  .qr-title{font-size:14px;font-weight:700;letter-spacing:.15em;color:var(--accent)}
+  .qr-sub{font-size:10px;color:var(--muted);letter-spacing:.1em;text-align:center}
+  #qr-wrap{
+    position:relative;width:270px;height:270px;border-radius:10px;overflow:hidden;
+    border:2px solid var(--accent);box-shadow:0 0 40px rgba(0,255,136,.2);
+  }
+  #qr-video{width:100%;height:100%;object-fit:cover}
+  #qr-overlay-canvas{position:absolute;inset:0;width:100%;height:100%}
+  #qr-scan-line{
+    position:absolute;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);
+    animation:scanline 2s ease-in-out infinite;
+  }
+  @keyframes scanline{0%{top:0}50%{top:calc(100% - 2px)}100%{top:0}}
+  #qr-status{font-size:11px;color:var(--accent);letter-spacing:.1em;min-height:20px;text-align:center}
+  .qr-close-btn{
+    padding:10px 24px;border:1px solid var(--border);border-radius:6px;
+    background:transparent;color:var(--muted);font-family:var(--font);
+    font-size:11px;letter-spacing:.15em;cursor:pointer;
+  }
+  .qr-close-btn:hover{color:var(--text)}
+
+  /* ── Registry picker (inline on setup) ── */
+  #cam-list{
+    width:100%;max-width:300px;display:flex;flex-direction:column;gap:8px;
+    max-height:200px;overflow-y:auto;
+  }
+  .cam-pick{
+    background:var(--surface);border:1px solid var(--border);border-radius:8px;
+    padding:12px 14px;cursor:pointer;transition:border-color .15s;display:flex;
+    justify-content:space-between;align-items:center;
+  }
+  .cam-pick:hover{border-color:var(--accent)}
+  .cam-pick-name{font-size:12px;letter-spacing:.08em}
+  .cam-pick-status{
+    font-size:9px;letter-spacing:.1em;padding:3px 8px;border-radius:10px;
+  }
+  .cam-pick-status.online{background:rgba(0,255,136,.1);color:var(--accent);border:1px solid rgba(0,255,136,.2)}
+  .cam-pick-status.offline{background:rgba(68,68,85,.15);color:var(--muted);border:1px solid var(--border)}
+
+  /* ── Toast ── */
+  #toast{
+    position:fixed;bottom:70px;left:50%;transform:translateX(-50%) translateY(16px);
+    background:rgba(0,0,0,.92);border:1px solid var(--border);
+    padding:9px 18px;border-radius:6px;font-size:11px;opacity:0;
+    transition:all .25s;white-space:nowrap;z-index:300;pointer-events:none;letter-spacing:.08em;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div id="wrap">
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+</div>
+<div id="scan"></div>
+<div id="person-flash"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="hud-top">
+    <div class="badge" id="live-badge"><div class="rec-dot"></div> AO VIVO</div>
+    <div class="badge" id="detect-badge">🧍 <span id="detect-txt">–</span></div>
+    <div class="badge" id="status-badge" style="color:var(--muted)">
+      <div class="s-dot"></div><span id="status-txt">OFFLINE</span>
+    </div>
+  </div>
+  <div id="hud-bottom">
+    <div>
+      <div class="meta-line" id="room-line">SALA: –</div>
+      <div class="meta-line" id="conn-line">–</div>
+    </div>
+    <div id="controls">
+      <button class="ctrl-btn" id="detect-btn">🔍 DETECTAR</button>
+      <button class="ctrl-btn" id="track-btn">🎯 TRACK</button>
+      <button class="ctrl-btn" id="mute-btn">🔇</button>
+      <button class="ctrl-btn" id="fs-btn">⛶</button>
+      <button class="ctrl-btn" id="info-btn">📊</button>
+      <a class="ctrl-btn" href="/registry.html">🏠</a>
+    </div>
+  </div>
+</div>
+
+<!-- Track panel -->
+<div id="track-panel">
+  <b>DETECÇÃO</b><br>
+  Pessoas: <b id="tp-count">0</b><br>
+  Confiança: <b id="tp-conf">–</b><br><br>
+  <b>CÂMERA</b><br>
+  Pan:  <b id="tp-pan">90°</b><br>
+  Tilt: <b id="tp-tilt">90°</b><br>
+  Off X: <span id="tp-ox">0%</span><br>
+  Off Y: <span id="tp-oy">0%</span><br><br>
+  <b>MODELO</b><br>
+  <span id="tp-fps">– fps</span><br>
+  <span id="tp-back">–</span>
+</div>
+
+<!-- Model loading -->
+<div id="model-overlay">
+  <div class="model-icon">🧠</div>
+  <div class="model-title">CARREGANDO MODELO IA</div>
+  <div class="model-sub">COCO-SSD · Detecção de pessoas<br>Aguarde um momento...</div>
+  <div class="prog-bar"><div class="prog-fill"></div></div>
+</div>
+
+<!-- Waiting -->
+<div id="wait">
+  <div class="wait-icon">📡</div>
+  <div class="wait-title">WIFI-CAM</div>
+  <div id="wait-msg" class="wait-msg">Aguardando câmera...</div>
+  <div class="spinner"></div>
+</div>
+
+<!-- Setup -->
+<div id="setup">
+  <div class="setup-icon">🖥️</div>
+  <div>
+    <div class="setup-title">WIFI-CAM</div>
+    <div class="setup-sub">Viewer · Detecção · Tracking</div>
+  </div>
+
+  <!-- Camera list from registry -->
+  <div id="cam-list-wrap" style="width:100%;max-width:300px;display:none">
+    <div style="font-size:9px;letter-spacing:.15em;color:var(--muted);text-transform:uppercase;margin-bottom:8px">
+      Câmeras disponíveis
+    </div>
+    <div id="cam-list"></div>
+    <div style="margin:10px 0;text-align:center;font-size:9px;color:var(--muted)">— ou digite —</div>
+  </div>
+
+  <div class="field">
+    <label>Código da sala</label>
+    <input id="room-input" maxlength="8" placeholder="CAM01" value="">
+    <div class="hint">Mesmo código da câmera</div>
+  </div>
+
+  <div class="setup-actions">
+    <button class="primary-btn" id="connect-btn">▶ CONECTAR</button>
+    <button class="secondary-btn" id="qr-open-btn">📷 ESCANEAR QR CODE</button>
+  </div>
+</div>
+
+<!-- QR Modal -->
+<div id="qr-modal">
+  <div class="qr-title">ESCANEAR QR CODE</div>
+  <div class="qr-sub">Aponte para o QR exibido na câmera</div>
+  <div id="qr-wrap">
+    <video id="qr-video" autoplay playsinline muted></video>
+    <canvas id="qr-overlay-canvas"></canvas>
+    <div id="qr-scan-line"></div>
+  </div>
+  <div id="qr-status">Procurando QR Code...</div>
+  <button class="qr-close-btn" id="qr-modal-close">✕ CANCELAR</button>
+</div>
+
+<div id="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+// ── ICE ───────────────────────────────────────────────────────────────────────
+const ICE = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+];
+
+// ── Auto-connect from URL param (?room=CAM01) ─────────────────────────────────
+const urlParams = new URLSearchParams(window.location.search);
+const autoRoom  = urlParams.get('room');
+if (autoRoom) document.getElementById('room-input').value = autoRoom.toUpperCase();
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let socket, pc, model;
+let roomId = '';
+let detectEnabled = true, trackEnabled = false;
+let animFrame;
+let panAngle = 90, tiltAngle = 90;
+const KP = 0.04, DEAD = 0.05, MAX_STEP = 4;
+let lastDetect = 0, frameCount = 0, detFPS = 0;
+
+// DOM
+const video      = document.getElementById('video');
+const canvas     = document.getElementById('canvas');
+const ctx        = canvas.getContext('2d');
+const setup      = document.getElementById('setup');
+const wait       = document.getElementById('wait');
+const modelOvl   = document.getElementById('model-overlay');
+const stBadge    = document.getElementById('status-badge');
+const stTxt      = document.getElementById('status-txt');
+const liveBadge  = document.getElementById('live-badge');
+const detectBdg  = document.getElementById('detect-badge');
+const detectTxt  = document.getElementById('detect-txt');
+const trackPanel = document.getElementById('track-panel');
+const roomLine   = document.getElementById('room-line');
+const connLine   = document.getElementById('conn-line');
+const flash      = document.getElementById('person-flash');
+
+// ── Load cameras from registry ────────────────────────────────────────────────
+async function loadCameraList() {
+  try {
+    const res = await fetch('/api/cameras');
+    const cams = await res.json();
+    if (cams.length === 0) return;
+
+    const wrap = document.getElementById('cam-list-wrap');
+    const list = document.getElementById('cam-list');
+    wrap.style.display = 'block';
+
+    list.innerHTML = cams.map(c => `
+      <div class="cam-pick" onclick="pickCamera('${c.roomId}')">
+        <div class="cam-pick-name">${escHtml(c.name)}</div>
+        <div class="cam-pick-status ${c.online ? 'online' : 'offline'}">${c.online ? '● AO VIVO' : '○ OFFLINE'}</div>
+      </div>
+    `).join('');
+  } catch (e) { console.warn('Registry fetch failed:', e); }
+}
+
+function pickCamera(room) {
+  document.getElementById('room-input').value = room;
+  startConnect(room);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Model ─────────────────────────────────────────────────────────────────────
+async function loadModel() {
+  try {
+    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    document.getElementById('tp-back').textContent = tf.getBackend();
+    modelOvl.style.display = 'none';
+    toast('Modelo IA carregado ✓');
+  } catch (e) {
+    modelOvl.querySelector('.model-sub').textContent = 'Erro ao carregar modelo IA';
+  }
+}
+
+// ── Detection ─────────────────────────────────────────────────────────────────
+function resizeCanvas() {
+  canvas.width  = video.videoWidth  || canvas.clientWidth;
+  canvas.height = video.videoHeight || canvas.clientHeight;
+}
+
+function drawBox(bbox, label, score, isTarget, vw, vh) {
+  const sx = canvas.clientWidth / vw, sy = canvas.clientHeight / vh;
+  const [bx,by,bw,bh] = [bbox[0]*sx, bbox[1]*sy, bbox[2]*sx, bbox[3]*sy];
+  const color = isTarget ? '#00ff88' : '#ffbb00';
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = isTarget ? 2.5 : 1.5;
+  ctx.shadowColor = color; ctx.shadowBlur = isTarget ? 12 : 4;
+  ctx.strokeRect(bx, by, bw, bh);
+  // Corners
+  const cs = 14;
+  [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]].forEach(([cx,cy,dx,dy]) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(cx, cy, dx*cs, 2);
+    ctx.fillRect(cx, cy, 2, dy*cs);
+  });
+  // Label
+  ctx.shadowBlur = 0;
+  ctx.font = 'bold 10px JetBrains Mono, monospace';
+  const txt = `${label.toUpperCase()} ${Math.round(score*100)}%`;
+  const tw  = ctx.measureText(txt).width;
+  ctx.fillStyle = 'rgba(0,0,0,.75)';
+  ctx.fillRect(bx, by-18, tw+8, 16);
+  ctx.fillStyle = color;
+  ctx.fillText(txt, bx+4, by-5);
+  // Target crosshair
+  if (isTarget) {
+    const cx = bx+bw/2, cy = by+bh/2;
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2);
+    ctx.fillStyle = color; ctx.fill();
+    ctx.strokeStyle = color+'44'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx, canvas.clientHeight); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(canvas.clientWidth, cy); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
+function computePanTilt(bbox, vw, vh) {
+  const cx = bbox[0] + bbox[2]/2, cy = bbox[1] + bbox[3]/2;
+  const offX = (cx - vw/2) / (vw/2), offY = (cy - vh/2) / (vh/2);
+  document.getElementById('tp-ox').textContent = (offX*100).toFixed(0)+'%';
+  document.getElementById('tp-oy').textContent = (offY*100).toFixed(0)+'%';
+  const moveX = Math.abs(offX) > DEAD ? offX : 0;
+  const moveY = Math.abs(offY) > DEAD ? offY : 0;
+  panAngle  = Math.max(0, Math.min(180, panAngle  + Math.max(-MAX_STEP, Math.min(MAX_STEP, moveX*KP*100))));
+  tiltAngle = Math.max(0, Math.min(180, tiltAngle + Math.max(-MAX_STEP, Math.min(MAX_STEP, moveY*KP*100))));
+  return { pan: Math.round(panAngle), tilt: Math.round(tiltAngle) };
+}
+
+async function detect() {
+  if (!model || !video.videoWidth) { animFrame = requestAnimationFrame(detect); return; }
+  resizeCanvas();
+  ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+  const vw = video.videoWidth, vh = video.videoHeight;
+
+  if (detectEnabled) {
+    try {
+      const preds = await model.detect(video);
+      const persons = preds.filter(p => p.class === 'person' && p.score > 0.45)
+                          .sort((a,b) => (b.bbox[2]*b.bbox[3])-(a.bbox[2]*a.bbox[3]));
+      preds.forEach(p => { if (p.score > 0.4) drawBox(p.bbox, p.class, p.score, p === persons[0], vw, vh); });
+
+      const detected = persons.length > 0;
+      document.getElementById('tp-count').textContent = persons.length;
+      document.getElementById('tp-conf').textContent  = detected ? Math.round(persons[0].score*100)+'%' : '–';
+
+      detectBdg.classList.add('show');
+      if (detected) {
+        detectBdg.className = 'badge alert show';
+        detectTxt.textContent = `${persons.length} PESSOA${persons.length>1?'S':''}`;
+        flash.className = 'alert';
+      } else {
+        detectBdg.className = 'badge clear show';
+        detectTxt.textContent = 'MONITORANDO';
+        flash.className = '';
+      }
+
+      if (trackEnabled && detected && socket) {
+        const cmd = computePanTilt(persons[0].bbox, vw, vh);
+        document.getElementById('tp-pan').textContent  = cmd.pan+'°';
+        document.getElementById('tp-tilt').textContent = cmd.tilt+'°';
+        socket.emit('pan-tilt', cmd);
+        socket.emit('person-alert', { detected: true, count: persons.length });
+      } else if (!detected && socket) {
+        socket.emit('person-alert', { detected: false, count: 0 });
+      }
+
+      frameCount++;
+      const now = performance.now();
+      if (now - lastDetect >= 1000) {
+        detFPS = frameCount; frameCount = 0; lastDetect = now;
+        document.getElementById('tp-fps').textContent = detFPS+' fps';
+      }
+    } catch(e) { console.error(e); }
+  }
+  animFrame = requestAnimationFrame(detect);
+}
+
+// ── QR Scanner ────────────────────────────────────────────────────────────────
+let qrStream = null, qrInterval = null;
+
+document.getElementById('qr-open-btn').addEventListener('click', openQR);
+document.getElementById('qr-modal-close').addEventListener('click', closeQR);
+
+async function openQR() {
+  document.getElementById('qr-modal').classList.add('show');
+  document.getElementById('qr-status').textContent = 'Procurando QR Code...';
+  try {
+    qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const qv  = document.getElementById('qr-video');
+    const qc  = document.getElementById('qr-overlay-canvas');
+    const qx  = qc.getContext('2d');
+    qv.srcObject = qrStream;
+
+    qrInterval = setInterval(() => {
+      if (qv.readyState !== qv.HAVE_ENOUGH_DATA) return;
+      qc.width = qv.videoWidth; qc.height = qv.videoHeight;
+      qx.drawImage(qv, 0, 0);
+      const img = qx.getImageData(0, 0, qc.width, qc.height);
+      const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+      if (code?.data) handleQR(code.data);
+    }, 200);
+  } catch (e) {
+    toast('Câmera indisponível para scanner');
+    closeQR();
+  }
+}
+
+function handleQR(data) {
+  let room = data;
+  if (data.startsWith('WIFICAM:')) room = data.slice(8);
+  document.getElementById('qr-status').textContent = `✓ Sala: ${room}`;
+  clearInterval(qrInterval);
+  setTimeout(() => { closeQR(); startConnect(room); }, 900);
+}
+
+function closeQR() {
+  clearInterval(qrInterval);
+  if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }
+  document.getElementById('qr-modal').classList.remove('show');
+}
+
+// ── WebRTC ────────────────────────────────────────────────────────────────────
+function createPeer() {
+  if (pc) { pc.close(); pc = null; }
+  pc = new RTCPeerConnection({ iceServers: ICE });
+
+  pc.onicecandidate = ({ candidate }) =>
+    candidate && socket.emit('ice-candidate', { to: socket.cameraId, candidate });
+
+  pc.ontrack = ({ streams }) => {
+    if (!streams[0]) return;
+    video.srcObject = streams[0];
+    video.classList.add('active');
+    canvas.classList.add('active');
+    wait.classList.remove('show');
+    liveBadge.classList.add('show');
+    setStatus('CONECTADO', 'connected');
+    connLine.textContent = 'WebRTC · live';
+    detect();
+    toast('Stream ativo ✓');
+  };
+
+  pc.onconnectionstatechange = () => {
+    connLine.textContent = `WebRTC · ${pc.connectionState}`;
+    if (['disconnected','failed'].includes(pc.connectionState)) {
+      wait.classList.add('show');
+      video.classList.remove('active');
+      canvas.classList.remove('active');
+      setStatus('AGUARDANDO', 'waiting');
+      cancelAnimationFrame(animFrame);
+    }
+  };
+  return pc;
+}
+
+// ── Socket ────────────────────────────────────────────────────────────────────
+function setStatus(label, cls) { stBadge.className = 'badge '+cls; stTxt.textContent = label; }
+
+function toast(msg, ms = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function showWait(msg) {
+  wait.classList.add('show');
+  document.getElementById('wait-msg').textContent = msg;
+}
+
+function startConnect(room) {
+  roomId = room.toUpperCase();
+  roomLine.textContent = `SALA: ${roomId}`;
+  setup.style.display = 'none';
+  showWait('Conectando...');
+
+  socket = io();
+  socket.cameraId = null;
+
+  socket.on('connect', () => {
+    socket.emit('join-as-viewer', { roomId });
+    setStatus('CONECTANDO', 'waiting');
+  });
+
+  socket.on('waiting-for-camera', () => {
+    setStatus('AGUARDANDO', 'waiting');
+    showWait('Câmera offline.\nAbra camera.html no celular.');
+  });
+
+  socket.on('camera-ready', () => showWait('Câmera encontrada. Conectando...'));
+
+  socket.on('offer', async ({ from, offer }) => {
+    socket.cameraId = from;
+    createPeer();
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('answer', { to: from, answer });
+  });
+
+  socket.on('ice-candidate', async ({ candidate }) => {
+    await pc?.addIceCandidate(new RTCIceCandidate(candidate));
+  });
+
+  socket.on('camera-disconnected', () => {
+    showWait('Câmera desconectada. Aguardando...');
+    setStatus('OFFLINE', 'offline');
+    liveBadge.classList.remove('show');
+    video.classList.remove('active');
+    canvas.classList.remove('active');
+    cancelAnimationFrame(animFrame);
+  });
+
+  socket.on('disconnect', () => {
+    setStatus('OFFLINE', 'offline');
+    cancelAnimationFrame(animFrame);
+  });
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+document.getElementById('connect-btn').addEventListener('click', () => {
+  const room = document.getElementById('room-input').value.trim().toUpperCase();
+  if (!room) { toast('Digite o código da sala'); return; }
+  startConnect(room);
+});
+
+document.getElementById('detect-btn').addEventListener('click', () => {
+  detectEnabled = !detectEnabled;
+  document.getElementById('detect-btn').classList.toggle('on', detectEnabled);
+  if (!detectEnabled) {
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    flash.className = '';
+    detectBdg.classList.remove('show');
+  }
+});
+
+document.getElementById('track-btn').addEventListener('click', () => {
+  trackEnabled = !trackEnabled;
+  document.getElementById('track-btn').classList.toggle('on', trackEnabled);
+  if (trackEnabled && !detectEnabled) {
+    detectEnabled = true;
+    document.getElementById('detect-btn').classList.add('on');
+  }
+  toast(trackEnabled ? '🎯 Tracking ativado' : 'Tracking desativado');
+});
+
+document.getElementById('mute-btn').addEventListener('click', () => {
+  video.muted = !video.muted;
+  document.getElementById('mute-btn').textContent = video.muted ? '🔈' : '🔇';
+});
+
+document.getElementById('fs-btn').addEventListener('click', () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen().catch(()=>{});
+});
+
+document.getElementById('info-btn').addEventListener('click', () => {
+  trackPanel.classList.toggle('show');
+});
+
+document.getElementById('room-input').addEventListener('input', e => {
+  e.target.value = e.target.value.toUpperCase();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadModel();
+loadCameraList();
+
+// Auto-connect if room param in URL
+if (autoRoom) {
+  // Small delay to let model start loading
+  setTimeout(() => startConnect(autoRoom), 300);
+}
+</script>
+</body>
+</html>

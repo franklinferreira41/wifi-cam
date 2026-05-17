@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>WiFi-Cam · Câmera</title>
+<!-- QR Code generator -->
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0a0a;--surface:#111;--border:#1e1e1e;
+    --accent:#00ff88;--red:#ff3333;--yellow:#ffbb00;
+    --text:#e8e8e8;--muted:#555;--font:'JetBrains Mono',monospace;
+  }
+  html,body{height:100%;width:100%;background:var(--bg);color:var(--text);font-family:var(--font);overflow:hidden}
+
+  #video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;background:#000;z-index:0}
+  #overlay{
+    position:fixed;inset:0;z-index:5;pointer-events:none;
+    background:repeating-linear-gradient(to bottom,transparent,transparent 2px,rgba(0,0,0,.06) 2px,rgba(0,0,0,.06) 4px);
+  }
+  #alert-frame{position:fixed;inset:0;z-index:6;pointer-events:none;border:3px solid transparent;transition:all .3s}
+  #alert-frame.alert{border-color:rgba(255,51,51,.7);box-shadow:inset 0 0 40px rgba(255,51,51,.2);animation:pulse-red 1s ease-in-out infinite}
+  @keyframes pulse-red{0%,100%{border-color:rgba(255,51,51,.7)}50%{border-color:rgba(255,51,51,.2)}}
+
+  /* ── HUD ── */
+  #hud{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;padding:14px;pointer-events:none}
+  #hud-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}
+  #hud-bottom{margin-top:auto;display:flex;justify-content:space-between;align-items:flex-end}
+
+  .badge{
+    background:rgba(0,0,0,.78);border:1px solid var(--border);border-radius:4px;
+    padding:6px 11px;font-size:10px;letter-spacing:.07em;backdrop-filter:blur(8px);
+    display:flex;align-items:center;gap:7px;
+  }
+  .rec-dot{width:7px;height:7px;border-radius:50%;background:var(--red);animation:blink 1.2s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.1}}
+
+  #person-badge{border-color:rgba(255,51,51,.3);color:var(--muted);display:none}
+  #person-badge.show{display:flex}
+  #person-badge.alert{color:var(--red);border-color:var(--red)}
+  #person-badge.clear{color:var(--accent);border-color:rgba(0,255,136,.3)}
+
+  #status-badge.offline{color:var(--muted)}
+  #status-badge.waiting{color:var(--yellow)}
+  #status-badge.connected{color:var(--accent)}
+  .s-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+
+  /* ── Servo panel ── */
+  #servo-display{
+    position:fixed;top:54px;left:14px;z-index:25;
+    background:rgba(0,0,0,.85);border:1px solid var(--border);border-radius:6px;
+    padding:12px 16px;font-size:10px;line-height:2.1;backdrop-filter:blur(8px);
+    pointer-events:none;letter-spacing:.05em;min-width:160px;
+  }
+  #servo-display b{color:var(--accent)}
+  .servo-bar{width:120px;height:3px;background:var(--border);border-radius:2px;margin:2px 0 6px;overflow:hidden}
+  .servo-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .15s}
+
+  .hud-meta{display:flex;flex-direction:column;gap:3px}
+  .meta-line{font-size:10px;color:var(--muted);background:rgba(0,0,0,.65);padding:3px 8px;border-radius:3px}
+  #controls{display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:all}
+  .ctrl-btn{
+    height:40px;padding:0 12px;border-radius:6px;border:1px solid var(--border);
+    background:rgba(0,0,0,.78);color:var(--text);font-family:var(--font);
+    font-size:10px;letter-spacing:.1em;cursor:pointer;display:flex;
+    align-items:center;gap:6px;backdrop-filter:blur(8px);
+    transition:all .15s;-webkit-tap-highlight-color:transparent;
+  }
+  .ctrl-btn:active{transform:scale(.92)}
+  .ctrl-btn.on{border-color:var(--accent);color:var(--accent)}
+  .ctrl-btn.serial-on{border-color:var(--accent);color:var(--accent)}
+
+  /* ── Serial log ── */
+  #serial-log{
+    position:fixed;bottom:70px;left:14px;right:14px;z-index:25;
+    background:rgba(0,0,0,.92);border:1px solid var(--border);border-radius:6px;
+    padding:10px 14px;font-size:9px;line-height:1.8;
+    max-height:90px;overflow-y:auto;color:var(--muted);display:none;pointer-events:none;
+  }
+  #serial-log .cmd{color:var(--accent)}
+  #serial-log .err{color:var(--red)}
+
+  /* ── QR modal ── */
+  #qr-modal{
+    position:fixed;inset:0;z-index:100;background:rgba(10,10,10,.97);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
+  }
+  .qr-title{font-size:14px;font-weight:700;letter-spacing:.15em;color:var(--accent);text-align:center}
+  .qr-sub{font-size:10px;color:var(--muted);letter-spacing:.12em;text-align:center;line-height:1.8}
+  #qr-box{
+    background:#fff;padding:16px;border-radius:10px;
+    box-shadow:0 0 40px rgba(0,255,136,.25);
+  }
+  #qr-room-label{
+    font-size:13px;letter-spacing:.25em;color:var(--accent);margin-top:8px;text-align:center
+  }
+  #qr-id-label{font-size:9px;color:var(--muted);text-align:center;margin-top:4px;letter-spacing:.1em}
+  .qr-btn{
+    padding:12px 32px;border-radius:6px;border:1px solid var(--accent);
+    background:rgba(0,255,136,.1);color:var(--accent);font-family:var(--font);
+    font-size:12px;letter-spacing:.18em;cursor:pointer;font-weight:700;
+  }
+  .qr-btn:active{opacity:.75}
+
+  /* ── Setup ── */
+  #setup{
+    position:fixed;inset:0;z-index:200;background:var(--bg);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:22px;padding:32px;
+  }
+  .setup-icon{font-size:50px}
+  .setup-title{font-size:20px;font-weight:700;letter-spacing:.12em;color:var(--accent)}
+  .setup-sub{font-size:10px;letter-spacing:.2em;color:var(--muted);text-transform:uppercase;text-align:center;margin-top:4px}
+  .field{width:100%;max-width:300px;display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:10px;letter-spacing:.15em;color:var(--muted);text-transform:uppercase}
+  .field input{
+    width:100%;background:var(--surface);border:1px solid var(--border);border-radius:6px;
+    padding:12px 16px;font-family:var(--font);font-size:16px;color:var(--text);
+    outline:none;transition:border-color .2s;text-align:center;
+  }
+  .field input:focus{border-color:var(--accent)}
+  .hint{font-size:9px;color:#2a2a2a;letter-spacing:.1em;margin-top:2px}
+  .primary-btn{
+    width:100%;max-width:300px;padding:14px;background:var(--accent);color:#000;
+    border:none;border-radius:6px;font-family:var(--font);font-size:13px;font-weight:700;
+    letter-spacing:.18em;text-transform:uppercase;cursor:pointer;transition:opacity .2s,transform .1s;
+  }
+  .primary-btn:active{transform:scale(.97);opacity:.85}
+  .cam-id-display{
+    font-size:9px;color:#222;letter-spacing:.1em;text-align:center;margin-top:-8px
+  }
+
+  /* ── Toast ── */
+  #toast{
+    position:fixed;bottom:14px;left:50%;transform:translateX(-50%) translateY(16px);
+    background:rgba(0,0,0,.92);border:1px solid var(--border);
+    padding:9px 18px;border-radius:6px;font-size:11px;opacity:0;
+    transition:all .25s;white-space:nowrap;z-index:300;pointer-events:none;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<video id="video" autoplay playsinline muted></video>
+<div id="overlay"></div>
+<div id="alert-frame"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="hud-top">
+    <div class="badge"><div class="rec-dot"></div> LIVE</div>
+    <div class="badge" id="person-badge">🧍 <span id="person-txt">–</span></div>
+    <div class="badge" id="status-badge" style="color:var(--muted)">
+      <div class="s-dot"></div><span id="status-txt">OFFLINE</span>
+    </div>
+  </div>
+  <div id="hud-bottom">
+    <div class="hud-meta">
+      <div class="meta-line" id="res-line">–</div>
+      <div class="meta-line" id="room-line">SALA: –</div>
+    </div>
+    <div id="controls">
+      <button class="ctrl-btn" id="qr-btn">📷 QR CODE</button>
+      <button class="ctrl-btn" id="serial-btn">🔌 ARDUINO</button>
+      <button class="ctrl-btn" id="flip-btn">🔄 CÂMERA</button>
+      <button class="ctrl-btn" id="center-btn">⊙ CENTRAR</button>
+      <button class="ctrl-btn" id="log-btn">📟 LOG</button>
+    </div>
+  </div>
+</div>
+
+<!-- Servo display -->
+<div id="servo-display">
+  <b>SERVOS</b><br>
+  PAN  <b id="sd-pan">90°</b><br>
+  <div class="servo-bar"><div class="servo-fill" id="bar-pan" style="width:50%"></div></div>
+  TILT <b id="sd-tilt">90°</b><br>
+  <div class="servo-bar"><div class="servo-fill" id="bar-tilt" style="width:50%"></div></div>
+  <span id="sd-serial" style="color:var(--muted)">Serial: –</span>
+</div>
+
+<!-- Serial log -->
+<div id="serial-log"></div>
+
+<!-- QR Modal -->
+<div id="qr-modal" style="display:none">
+  <div class="qr-title">QR CODE · CÂMERA</div>
+  <div class="qr-sub">Escaneie no viewer ou no Registry<br>para conectar instantaneamente</div>
+  <div id="qr-box"></div>
+  <div id="qr-room-label">–</div>
+  <div id="qr-id-label">ID: –</div>
+  <button class="qr-btn" id="qr-close">✕ FECHAR</button>
+</div>
+
+<!-- Setup -->
+<div id="setup">
+  <div class="setup-icon">📷</div>
+  <div>
+    <div class="setup-title">WIFI-CAM</div>
+    <div class="setup-sub">Câmera · Transmissor · PTZ</div>
+  </div>
+  <div class="field">
+    <label>Nome da câmera</label>
+    <input id="name-input" maxlength="32" placeholder="Câmera Sala" value="Câmera">
+  </div>
+  <div class="field">
+    <label>Código da sala</label>
+    <input id="room-input" maxlength="8" placeholder="CAM01" value="CAM01">
+    <div class="hint">Use o mesmo código no viewer</div>
+  </div>
+  <button class="primary-btn" id="start-btn">▶ INICIAR TRANSMISSÃO</button>
+  <div class="cam-id-display" id="cam-id-display">ID: –</div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+// ── ICE ───────────────────────────────────────────────────────────────────────
+const ICE = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+];
+
+// ── Persistent camera identity ────────────────────────────────────────────────
+function getOrCreateCameraId() {
+  let id = localStorage.getItem('wificam_id');
+  if (!id) {
+    id = 'cam-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,7);
+    localStorage.setItem('wificam_id', id);
+  }
+  return id;
+}
+
+const CAMERA_ID = getOrCreateCameraId();
+document.getElementById('cam-id-display').textContent = 'ID: ' + CAMERA_ID.substring(0, 16) + '…';
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let socket, stream;
+const peers = {};
+let roomId = 'CAM01';
+let camName = 'Câmera';
+let facing = 'environment';
+let torchTrack = null;
+let qrGenerated = false;
+
+// ── WebSerial ─────────────────────────────────────────────────────────────────
+let serialPort = null, serialWriter = null, serialConnected = false;
+let lastSerialSend = 0;
+const SERIAL_INTERVAL = 80;
+
+async function connectSerial() {
+  if (!('serial' in navigator)) { toast('WebSerial: use Chrome/Edge desktop'); return; }
+  try {
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 115200 });
+    serialWriter = serialPort.writable.getWriter();
+    serialConnected = true;
+    document.getElementById('serial-btn').classList.add('serial-on');
+    document.getElementById('serial-btn').textContent = '🔌 ARDUINO ✓';
+    document.getElementById('sd-serial').textContent  = 'Serial: OK';
+    document.getElementById('sd-serial').style.color  = 'var(--accent)';
+    logSerial('Conectado (115200 baud)', false);
+    sendSerialCommand(90, 90);
+    toast('Arduino conectado ✓');
+  } catch (e) {
+    toast('Serial: ' + e.message);
+    logSerial('Erro: ' + e.message, true);
+  }
+}
+
+async function sendSerialCommand(pan, tilt) {
+  if (!serialConnected || !serialWriter) return;
+  const now = performance.now();
+  if (now - lastSerialSend < SERIAL_INTERVAL) return;
+  lastSerialSend = now;
+  try {
+    await serialWriter.write(new TextEncoder().encode(`P:${pan},T:${tilt}\n`));
+    logSerial(`P:${pan} T:${tilt}`, false);
+  } catch (e) {
+    serialConnected = false;
+    logSerial('Erro de escrita: ' + e.message, true);
+  }
+}
+
+function logSerial(msg, isErr) {
+  const log = document.getElementById('serial-log');
+  if (log.style.display === 'none' || !log.style.display) return;
+  const line = document.createElement('div');
+  line.className = isErr ? 'err' : 'cmd';
+  line.textContent = new Date().toLocaleTimeString('pt-BR',{hour12:false}) + ' › ' + msg;
+  log.appendChild(line);
+  while (log.children.length > 30) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Servo UI ──────────────────────────────────────────────────────────────────
+function updateServo(pan, tilt) {
+  document.getElementById('sd-pan').textContent   = pan  + '°';
+  document.getElementById('sd-tilt').textContent  = tilt + '°';
+  document.getElementById('bar-pan').style.width  = (pan  / 180 * 100) + '%';
+  document.getElementById('bar-tilt').style.width = (tilt / 180 * 100) + '%';
+}
+
+// ── QR Code ───────────────────────────────────────────────────────────────────
+function generateQR() {
+  const box = document.getElementById('qr-box');
+  box.innerHTML = '';
+  // Format: WIFICAM:ROOM_ID  (jsQR on viewer side reads this)
+  new QRCode(box, {
+    text: `WIFICAM:${roomId}`,
+    width: 200, height: 200,
+    colorDark: '#000000', colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.H
+  });
+  document.getElementById('qr-room-label').textContent = roomId;
+  document.getElementById('qr-id-label').textContent   = 'ID: ' + CAMERA_ID.substring(0, 20) + '…';
+}
+
+// ── Register camera on server ─────────────────────────────────────────────────
+async function registerCamera() {
+  try {
+    await fetch('/api/cameras/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: CAMERA_ID, name: camName, roomId })
+    });
+  } catch (e) {
+    console.warn('Register failed (offline?):', e);
+  }
+}
+
+// ── Camera ────────────────────────────────────────────────────────────────────
+async function startCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      audio: true
+    });
+    document.getElementById('video').srcObject = stream;
+    torchTrack = stream.getVideoTracks()[0];
+    const s = torchTrack.getSettings();
+    document.getElementById('res-line').textContent = `${s.width||'?'}×${s.height||'?'}  ${s.frameRate?Math.round(s.frameRate):'?'}fps`;
+    return true;
+  } catch (e) {
+    toast('Câmera: ' + e.message);
+    return false;
+  }
+}
+
+// ── WebRTC ────────────────────────────────────────────────────────────────────
+function makePeer(viewerId) {
+  if (peers[viewerId]) peers[viewerId].close();
+  const pc = new RTCPeerConnection({ iceServers: ICE });
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  pc.onicecandidate = ({ candidate }) => candidate && socket.emit('ice-candidate', { to: viewerId, candidate });
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') setStatus('STREAMING', 'connected');
+    if (['disconnected','failed'].includes(pc.connectionState)) setStatus('AGUARDANDO', 'waiting');
+  };
+  peers[viewerId] = pc;
+  return pc;
+}
+
+async function offerTo(viewerId) {
+  const pc = makePeer(viewerId);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit('offer', { to: viewerId, offer });
+}
+
+// ── Socket ────────────────────────────────────────────────────────────────────
+function setStatus(label, cls) {
+  document.getElementById('status-badge').className = 'badge ' + cls;
+  document.getElementById('status-txt').textContent = label;
+}
+
+function toast(msg, ms = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), ms);
+}
+
+function connectSocket() {
+  socket = io();
+
+  socket.on('connect', () => {
+    socket.emit('join-as-camera', { roomId, cameraId: CAMERA_ID, name: camName });
+    setStatus('AGUARDANDO', 'waiting');
+  });
+
+  socket.on('camera-joined', ({ viewerCount: vc }) => {
+    if (vc > 0) toast(`${vc} viewer(s) esperando`);
+  });
+
+  socket.on('viewer-joined', async ({ viewerId }) => {
+    toast('Viewer conectado');
+    await offerTo(viewerId);
+  });
+
+  socket.on('answer', async ({ from, answer }) => {
+    await peers[from]?.setRemoteDescription(new RTCSessionDescription(answer));
+  });
+
+  socket.on('ice-candidate', async ({ candidate }) => {
+    const first = Object.values(peers)[0];
+    await first?.addIceCandidate(new RTCIceCandidate(candidate));
+  });
+
+  socket.on('viewer-left', ({ viewerId }) => {
+    peers[viewerId]?.close();
+    delete peers[viewerId];
+    if (Object.keys(peers).length === 0) setStatus('AGUARDANDO', 'waiting');
+  });
+
+  socket.on('pan-tilt', ({ pan, tilt }) => {
+    updateServo(pan, tilt);
+    sendSerialCommand(pan, tilt);
+  });
+
+  socket.on('person-alert', ({ detected, count }) => {
+    const badge = document.getElementById('person-badge');
+    const frame = document.getElementById('alert-frame');
+    badge.classList.add('show');
+    if (detected) {
+      badge.className = 'badge alert show';
+      document.getElementById('person-txt').textContent = `${count} PESSOA${count > 1 ? 'S' : ''}`;
+      frame.className = 'alert';
+    } else {
+      badge.className = 'badge clear show';
+      document.getElementById('person-txt').textContent = 'LIVRE';
+      frame.className = '';
+    }
+  });
+
+  socket.on('disconnect', () => setStatus('OFFLINE', 'offline'));
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+document.getElementById('start-btn').addEventListener('click', async () => {
+  camName = document.getElementById('name-input').value.trim() || 'Câmera';
+  roomId  = document.getElementById('room-input').value.trim().toUpperCase() || 'CAM01';
+  document.getElementById('room-line').textContent = `SALA: ${roomId}`;
+
+  if (!await startCamera()) return;
+  await registerCamera();
+
+  document.getElementById('setup').style.display = 'none';
+  updateServo(90, 90);
+  connectSocket();
+  generateQR();
+  toast(`Registrada como "${camName}" ✓`);
+});
+
+document.getElementById('qr-btn').addEventListener('click', () => {
+  document.getElementById('qr-modal').style.display = 'flex';
+});
+
+document.getElementById('qr-close').addEventListener('click', () => {
+  document.getElementById('qr-modal').style.display = 'none';
+});
+
+document.getElementById('serial-btn').addEventListener('click', connectSerial);
+
+document.getElementById('flip-btn').addEventListener('click', async () => {
+  facing = facing === 'environment' ? 'user' : 'environment';
+  await startCamera();
+  for (const [, pc] of Object.entries(peers)) {
+    const senders = pc.getSenders();
+    stream.getTracks().forEach(t => senders.find(s => s.track?.kind === t.kind)?.replaceTrack(t));
+  }
+  toast(facing === 'environment' ? 'Câmera traseira' : 'Câmera frontal');
+});
+
+document.getElementById('center-btn').addEventListener('click', () => {
+  updateServo(90, 90);
+  sendSerialCommand(90, 90);
+  toast('Servos centralizados');
+});
+
+document.getElementById('log-btn').addEventListener('click', () => {
+  const log = document.getElementById('serial-log');
+  const visible = log.style.display === 'block';
+  log.style.display = visible ? 'none' : 'block';
+  document.getElementById('log-btn').classList.toggle('on', !visible);
+});
+
+document.getElementById('room-input').addEventListener('input', e => {
+  e.target.value = e.target.value.toUpperCase();
+});
+
+navigator.wakeLock?.request('screen').catch(() => {});
+</script>
+</body>
+</html>
