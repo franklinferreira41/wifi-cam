@@ -3,7 +3,6 @@ const http     = require('http');
 const { Server } = require('socket.io');
 const path     = require('path');
 const fs       = require('fs');
-const { v4: uuidv4 } = require('uuid');
 
 const app    = express();
 const server = http.createServer(app);
@@ -42,7 +41,6 @@ saveRegistry();
 // List all cameras
 app.get('/api/cameras', (req, res) => {
   res.json(Object.values(registry).sort((a, b) => {
-    // Online first, then by lastSeen
     if (a.online !== b.online) return b.online ? 1 : -1;
     return new Date(b.lastSeen) - new Date(a.lastSeen);
   }));
@@ -105,7 +103,6 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.data = { roomId, role: 'camera', cameraId };
 
-    // Update registry
     if (cameraId && registry[cameraId]) {
       registry[cameraId].online  = true;
       registry[cameraId].roomId  = roomId;
@@ -179,6 +176,6 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n📷  WiFi-Cam  →  http://localhost:${PORT}`);
-  console.log(`    Registry  →  http://localhost:${PORT}/registry.html\n`);
+  console.log(`\n📷  WiFi-Cam  →  http://0.0.0.0:${PORT}`);
+  console.log(`    Registry  →  http://0.0.0.0:${PORT}/registry.html\n`);
 });
